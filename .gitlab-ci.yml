@@ -1,0 +1,84 @@
+stages:
+  - setup
+  - terraform_bucket
+  - terraform_eks 
+  - cluster_connection
+  - dynatrace_eks
+  - fetch_metrics
+
+variables:
+  AWS_ACCESS_KEY_ID: ""
+  AWS_SECRET_ACCESS_KEY: ""
+
+before_script:
+  - apt-get update -y
+  # Install AWS CLI
+  - curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+  - unzip awscliv2.zip
+  - ./aws/install
+  # Install Terraform
+  - apt-get update && apt-get install -y wget unzip curl
+  - wget https://releases.hashicorp.com/terraform/1.10.3/terraform_1.10.3_linux_amd64.zip
+  - unzip terraform_1.10.3_linux_amd64.zip
+  - mv terraform /usr/local/bin/
+  - terraform --version
+
+  # Install Helm
+  - curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+  - helm version
+
+  # Install kubectl
+  - curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+  - install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+  - kubectl version --client
+
+setup: 
+  stage: setup
+  script: 
+    - aws configure set aws_access_key_id $AWS_ACCESS_KEY_ID
+    - aws configure set aws_secret_access_key $AWS_SECRET_ACCESS_KEY
+    - terraform version
+terraform_bucket:
+  stage: terraform_bucket
+  script:
+     - cd bucket
+     - terraform init -upgrade
+     - terraform apply --auto-approve -var-file="./terraform.tfvars"
+
+terraform_eks:
+  stage: terraform_eks
+  script:
+     - cd eks-terraform
+     - terraform init -upgrade
+     - terraform apply --auto-approve -var-file="./terraform.tfvars"
+
+cluster_connection: 
+  stage: cluster_connection
+  script: 
+      - aws eks update-kubeconfig --region eu-west-3 --name dynatrace
+
+dynatrace_eks:
+  stage: dynatrace_eks
+  script: 
+    - aws eks update-kubeconfig --region eu-west-3 --name dynatrace
+    - kubectl get nodes
+    - helm install dynatrace-operator oci://public.ecr.aws/dynatrace/dynatrace-operator --create-namespace --namespace dynatrace
+    - echo "Waiting for 5 minutes before applying dynakube..."
+    - sleep 300
+    - kubectl apply -f dynakube.yaml
+
+fetch_metrics:
+  stage: fetch_metrics
+  image: python:3.9  
+  before_script:
+    - pip install --upgrade pip
+    - pip install requests matplotlib
+  script:
+    - echo "Waiting for 5 minutes before fetching metrics..."
+    - sleep 300
+    - python dynatrace.py 
+  artifacts:
+    paths:
+      - metrics.csv  
+      - plot.png   
+
